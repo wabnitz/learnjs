@@ -177,9 +177,17 @@ function create_table() {
       --table-name $table_name \
       --cli-input-json "file://${table_dir}/config.json" \
       > ${table_dir}/table_info.json
+
+    echo -n "Waiting for table creation..."
+    aws --profile admin dynamodb describe-table --table-name "$table_name" > ${table_dir}/table_info.json
+    while [[ "$(support/jsed.py ${table_dir}/table_info.json 'Table.TableStatus')" != "ACTIVE" ]]; do
+      aws --profile admin dynamodb describe-table --table-name "$table_name" > ${table_dir}/table_info.json
+      echo -n .
+    done
+    echo "...done!"
   fi
 
-  local table_arn=$(support/jsed.py ${table_dir}/table_info.json 'TableDescription.TableArn')
+  local table_arn=$(support/jsed.py ${table_dir}/table_info.json 'Table.TableArn')
   generate_table_policy ${table_arn} > ${table_dir}/role_policy.json
   aws --profile $profile iam put-role-policy \
     --policy-document file://${table_dir}/role_policy.json \
@@ -196,6 +204,7 @@ function build_bundle() {
   cp -r node_modules dist/
   cp -r lib/* dist/
   cd dist
+  chmod -R a+r *
   zip -r archive.zip *
   mv archive.zip ..
   cd ..
@@ -205,7 +214,7 @@ function build_bundle() {
 
 function deploy_bundle {
   for fn in `ls conf/lambda/functions`; do
-    aws lambda update-function-code \
+    aws --profile $profile lambda update-function-code \
       --function-name $fn \
       --zip-file "fileb://services/archive.zip" > conf/lambda/functions/$fn/info.json
   done
@@ -239,9 +248,14 @@ function create_lambda_service() {
   local service_dir=${1%/}
   local function_name=$(basename $service_dir)
   create_iam_role lambda_exec "file://conf/iam/policies/lambda_trust.json"
-  local role_arn=$(support/jsed.py conf/iam/roles/learnjs_lambda_exec/info.json 'Role.Arn')
+  echo -n "Waiting for IAM Role to become available..."
+  local role_arn=$(support/jsed.py conf/iam/roles/${app_name}_lambda_exec/info.json 'Role.Arn')
+  while ! aws --profile $profile iam get-role --role-name ${app_name}_lambda_exec &> /dev/null; do
+    echo -n .
+  done
+  echo "...done!"
   if [[ ! -e ${service_dir}/info.json ]]; then
-    aws lambda create-function \
+    aws --profile $profile lambda create-function \
       --function-name ${function_name} \
       --role ${role_arn} \
       --zip-file "fileb://services/archive.zip" \
